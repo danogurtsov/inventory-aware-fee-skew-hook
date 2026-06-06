@@ -3,21 +3,28 @@ pragma solidity ^0.8.26;
 
 import {Test} from "forge-std/Test.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 
 import {SimPool} from "./harness/SimPool.sol";
 import {PricePath} from "./harness/PricePath.sol";
 import {Agents} from "./harness/Agents.sol";
+import {Metrics} from "./harness/Metrics.sol";
 
 /// @title SimBase
 /// @notice Abstract harness that runs a market against a `SimPool`: each block an external price is
 ///         drawn (`PricePath`), a rational fee-aware arbitrageur pulls the pool to the no-arb band,
-///         then fee-elastic retail trades noise. It accumulates the LP's inventory drift and fee
-///         revenue as it goes. The objective metrics (LP net vs rebalancing, inventory variance) are
-///         layered on in the next commit; here the market and the agents are established and tested.
-/// @dev A `FeeSchedule` returns the fee per direction, so the same loop drives a static symmetric fee
-///      now and the asymmetric skew fee later — no rewrite when the mechanism arrives.
+///         then fee-elastic retail trades noise. It measures the LP the honest way — **net PnL vs a
+///         rebalancing benchmark (fees minus loss-versus-rebalancing) and inventory variance / final
+///         skew**, valuing every trade at the external price of its block. Fee revenue alone is a
+///         vanity metric and is reported only as a component, never as the verdict.
+/// @dev The fee is quoted through `_quoteFee`, so the same loop drives a static symmetric fee now and
+///      the asymmetric inventory-skew fee later with no rewrite. `_quoteFee` defaults to a settable
+///      static symmetric fee; the skew tests override it.
 abstract contract SimBase is Test {
     using PricePath for uint256;
+
+    uint256 internal constant WAD = 1e18;
+    uint256 internal constant Q96 = 1 << 96;
 
     // --- market configuration -------------------------------------------------
 
@@ -31,11 +38,20 @@ abstract contract SimBase is Test {
         uint24 retailRefFee; // fee (pips) at which retail flow halves
     }
 
-    // Fee (pips) charged for a swap in the given direction, at the current pool state.
-    // `zeroForOne == true` means the trader sells token0 (pushes price down).
+    // Fee (pips) charged per direction. `zeroForOne` == trader sells token0 (pushes price down).
     struct FeeQuote {
         uint24 feeZeroForOne;
         uint24 feeOneForZero;
+    }
+
+    /// @notice The objective outcome of one run.
+    struct RunResult {
+        int256 lpNetWad; // LP net PnL vs rebalancing (fees - LVR), token1 WAD  <-- the verdict
+        uint256 feeValueWad; // LP fee revenue (component, valued at block price)
+        int256 lvrWad; // loss-versus-rebalancing (fees - lpNet)
+        uint256 invVarianceWad; // variance of the LP's token0 inventory drift  <-- what the skew targets
+        int256 terminalInv0; // LP's net token0 position at the end (final skew)
+        uint256 avgFeePips; // mean fee charged across all swaps (elasticity/1 - sided cost)
     }
 
     // --- per-run accumulators (reset by `_reset`) -----------------------------
@@ -46,12 +62,67 @@ abstract contract SimBase is Test {
     uint256 internal feeCum1; // cumulative LP fees collected in token1
     uint256 internal retailInNotional; // cumulative retail input actually swapped (elasticity probe)
 
+    int256 internal lpNetWad; // running LP net PnL, valued per-block at the external price
+    uint256 internal feeValueWad; // running LP fee revenue, valued per-block
+    uint256 internal curPriceWad; // external price (token1/token0 WAD) for the block being simulated
+
+    uint256 internal invSampleN; // inventory-drift samples (one per block)
+    int256 internal invSampleSum; // sum of sampled invDelta0
+    uint256 internal invSampleSumSq; // sum of squares of sampled invDelta0
+
+    uint256 internal feePipsSum; // sum of per-swap fees charged
+    uint256 internal feeSwapCount; // number of swaps charged a fee
+
+    uint24 internal staticFeePips = 500; // default static symmetric fee for the base `_quoteFee`
+
     function _reset() internal {
         invDelta0 = 0;
         invDelta1 = 0;
         feeCum0 = 0;
         feeCum1 = 0;
         retailInNotional = 0;
+        lpNetWad = 0;
+        feeValueWad = 0;
+        curPriceWad = 0;
+        invSampleN = 0;
+        invSampleSum = 0;
+        invSampleSumSq = 0;
+        feePipsSum = 0;
+        feeSwapCount = 0;
+    }
+
+    // --- the run loop ---------------------------------------------------------
+
+    /// @notice Simulate the whole market over `market().blocks` and return the objective metrics.
+    function _run(uint256 seed) internal returns (RunResult memory r) {
+        Market memory m = market();
+        _reset();
+        SimPool pool = _newPool();
+
+        for (uint256 b = 1; b <= m.blocks; b++) {
+            int24 extTick = PricePath.tickAt(seed, b, m.startTick, m.stepTicks, m.driftTicks);
+            curPriceWad = _priceWadAtTick(extTick);
+
+            FeeQuote memory q = _quoteFee(pool.tick(), extTick);
+            _stepArb(pool, extTick, q);
+            _stepRetail(pool, seed, b, q);
+
+            // Sample the LP's inventory drift once per block (post-flow).
+            invSampleN += 1;
+            invSampleSum += invDelta0;
+            // safe: |invDelta0| is bounded by pool liquidity; its square stays far under 2**256.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            invSampleSumSq += uint256(invDelta0 * invDelta0);
+        }
+
+        r.lpNetWad = lpNetWad;
+        r.feeValueWad = feeValueWad;
+        // safe: feeValueWad is a sum of sim fee values, bounded far under 2**255.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        r.lvrWad = int256(feeValueWad) - lpNetWad;
+        r.invVarianceWad = Metrics.variance(invSampleN, invSampleSum, invSampleSumSq);
+        r.terminalInv0 = invDelta0;
+        r.avgFeePips = feeSwapCount == 0 ? 0 : feePipsSum / feeSwapCount;
     }
 
     // --- agent steps ----------------------------------------------------------
@@ -66,11 +137,11 @@ abstract contract SimBase is Test {
         if (poolTick > extTick + bandZ) {
             uint160 target = TickMath.getSqrtPriceAtTick(extTick + bandZ);
             (bool z4o, uint256 aIn, uint256 aOut, uint256 fee) = pool.swapToPrice(target, q.feeZeroForOne);
-            _applySwap(z4o, aIn, aOut, fee);
+            _applySwap(z4o, aIn, aOut, fee, q.feeZeroForOne);
         } else if (poolTick < extTick - bandO) {
             uint160 target = TickMath.getSqrtPriceAtTick(extTick - bandO);
             (bool z4o, uint256 aIn, uint256 aOut, uint256 fee) = pool.swapToPrice(target, q.feeOneForZero);
-            _applySwap(z4o, aIn, aOut, fee);
+            _applySwap(z4o, aIn, aOut, fee, q.feeOneForZero);
         }
     }
 
@@ -82,43 +153,83 @@ abstract contract SimBase is Test {
         uint256 notional = Agents.retailNotional(m.retailBase, avgFee, m.retailRefFee);
         if (notional == 0) return;
 
-        // Lean: split the notional 60/40 by a per-block coin flip, so net retail flow is small.
         uint256 h = uint256(keccak256(abi.encode(seed, "retail", blk)));
         bool moreSells = (h & 1) == 0;
         uint256 sellPart = (notional * (moreSells ? 6 : 4)) / 10; // token0-in (zeroForOne)
         uint256 buyPart = notional - sellPart; // token1-in (oneForZero)
 
         if (sellPart > 0) {
-            // retail sells token0: notional is token1-denominated, convert at current price ~1 for sim
             (uint256 usedIn, uint256 aOut, uint256 fee) = pool.swapExactIn(true, sellPart, q.feeZeroForOne);
-            _applySwap(true, usedIn, aOut, fee);
+            _applySwap(true, usedIn, aOut, fee, q.feeZeroForOne);
             retailInNotional += usedIn + fee;
         }
         if (buyPart > 0) {
             (uint256 usedIn, uint256 aOut, uint256 fee) = pool.swapExactIn(false, buyPart, q.feeOneForZero);
-            _applySwap(false, usedIn, aOut, fee);
+            _applySwap(false, usedIn, aOut, fee, q.feeOneForZero);
             retailInNotional += usedIn + fee;
         }
     }
 
-    /// @dev Fold one executed swap into the LP's inventory and fee accumulators. The LP is the
-    ///      counterparty: it receives the input token (curve amount + fee) and pays out the output.
-    function _applySwap(bool zeroForOne, uint256 amountIn, uint256 amountOut, uint256 feeAmount) internal {
-        // safe: sim swap amounts are bounded well under 2**255 by the pool's liquidity and step size.
+    /// @dev Fold one executed swap into inventory, fees, and the LP's mark-to-market PnL at the
+    ///      block's external price. The LP is the counterparty: it receives the input token (curve
+    ///      amount + fee) and pays out the output token. Valuing received-minus-paid at the external
+    ///      price is exactly LP-net-vs-rebalancing, and it already contains both the fee gain and the
+    ///      LVR loss without modelling them separately.
+    function _applySwap(
+        bool zeroForOne,
+        uint256 amountIn,
+        uint256 amountOut,
+        uint256 feeAmount,
+        uint24 feePips
+    ) internal {
+        uint256 p = curPriceWad;
+        // safe: sim amounts are bounded well under 2**255 by liquidity and step size.
         // forge-lint: disable-start(unsafe-typecast)
         if (zeroForOne) {
+            uint256 recvVal = FullMath.mulDiv(amountIn + feeAmount, p, WAD); // token0 received -> token1
+            lpNetWad += int256(recvVal) - int256(amountOut);
+            feeValueWad += FullMath.mulDiv(feeAmount, p, WAD);
             invDelta0 += int256(amountIn + feeAmount);
             invDelta1 -= int256(amountOut);
             feeCum0 += feeAmount;
         } else {
+            uint256 paidVal = FullMath.mulDiv(amountOut, p, WAD); // token0 paid -> token1
+            lpNetWad += int256(amountIn + feeAmount) - int256(paidVal);
+            feeValueWad += feeAmount;
             invDelta1 += int256(amountIn + feeAmount);
             invDelta0 -= int256(amountOut);
             feeCum1 += feeAmount;
         }
         // forge-lint: disable-end(unsafe-typecast)
+        feePipsSum += feePips;
+        feeSwapCount += 1;
     }
 
-    // --- to be provided by concrete tests ------------------------------------
+    // --- fee policy (overridable) ---------------------------------------------
+
+    /// @notice Fee quote for the current state. Base implementation is a static symmetric fee; the
+    ///         skew mechanism overrides this to lean the fee against inventory.
+    function _quoteFee(
+        int24,
+        /*poolTick*/
+        int24 /*extTick*/
+    )
+        internal
+        view
+        virtual
+        returns (FeeQuote memory)
+    {
+        return FeeQuote({feeZeroForOne: staticFeePips, feeOneForZero: staticFeePips});
+    }
+
+    // --- helpers --------------------------------------------------------------
+
+    /// @notice External price (token1 per token0, WAD) at a tick.
+    function _priceWadAtTick(int24 tick) internal pure returns (uint256) {
+        uint160 sqrtP = TickMath.getSqrtPriceAtTick(tick);
+        uint256 priceX96 = FullMath.mulDiv(sqrtP, sqrtP, Q96); // price * 2**96
+        return FullMath.mulDiv(priceX96, WAD, Q96);
+    }
 
     /// @notice The market parameters for this run.
     function market() internal view virtual returns (Market memory);
