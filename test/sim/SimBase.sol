@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import {Test} from "forge-std/Test.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
+import {SqrtPriceMath} from "@uniswap/v4-core/src/libraries/SqrtPriceMath.sol";
 
 import {SimPool} from "./harness/SimPool.sol";
 import {PricePath} from "./harness/PricePath.sol";
@@ -33,6 +34,8 @@ abstract contract SimBase is Test {
         uint24 stepTicks; // per-block volatility (half-width)
         int24 driftTicks; // per-block drift (0 == symmetric, >0 == toxic one-directional)
         uint128 liquidity; // constant active liquidity
+        int24 tickLower; // LP position range lower bound (for capital & concentration)
+        int24 tickUpper; // LP position range upper bound
         uint256 blocks; // number of blocks (12s each)
         uint256 retailBase; // retail notional per block at zero fee (token1 units)
         uint24 retailRefFee; // fee (pips) at which retail flow halves
@@ -44,7 +47,7 @@ abstract contract SimBase is Test {
         uint24 feeOneForZero;
     }
 
-    /// @notice The objective outcome of one run.
+    /// @notice The objective outcome of one run. Raw WAD figures plus the normalized verdicts.
     struct RunResult {
         int256 lpNetWad; // LP net PnL vs rebalancing (fees - LVR), token1 WAD  <-- the verdict
         uint256 feeValueWad; // LP fee revenue (component, valued at block price)
@@ -52,6 +55,10 @@ abstract contract SimBase is Test {
         uint256 invVarianceWad; // variance of the LP's token0 inventory drift  <-- what the skew targets
         int256 terminalInv0; // LP's net token0 position at the end (final skew)
         uint256 avgFeePips; // mean fee charged across all swaps (elasticity/1 - sided cost)
+        uint256 lpCapitalWad; // LP position value at the start (normalization base)
+        int256 lpNetBps; // LP net as basis points of capital (comparable across sizes)
+        int256 lpNetAnnualBps; // LP net annualized (bps/yr, 12s clock)  <-- the headline figure
+        int256 lvrAnnualBps; // loss-versus-rebalancing annualized (bps/yr)
     }
 
     // --- per-run accumulators (reset by `_reset`) -----------------------------
@@ -123,6 +130,12 @@ abstract contract SimBase is Test {
         r.invVarianceWad = Metrics.variance(invSampleN, invSampleSum, invSampleSumSq);
         r.terminalInv0 = invDelta0;
         r.avgFeePips = feeSwapCount == 0 ? 0 : feePipsSum / feeSwapCount;
+
+        // Normalize: raw token figures are meaningless; report bps of capital and annualized rate.
+        r.lpCapitalWad = _lpCapitalWad();
+        r.lpNetBps = Metrics.bpsOfCapital(r.lpNetWad, r.lpCapitalWad);
+        r.lpNetAnnualBps = Metrics.annualize(r.lpNetBps, m.blocks);
+        r.lvrAnnualBps = Metrics.annualize(Metrics.bpsOfCapital(r.lvrWad, r.lpCapitalWad), m.blocks);
     }
 
     // --- agent steps ----------------------------------------------------------
@@ -229,6 +242,20 @@ abstract contract SimBase is Test {
         uint160 sqrtP = TickMath.getSqrtPriceAtTick(tick);
         uint256 priceX96 = FullMath.mulDiv(sqrtP, sqrtP, Q96); // price * 2**96
         return FullMath.mulDiv(priceX96, WAD, Q96);
+    }
+
+    /// @notice Value (token1 WAD) of the LP position at the start price — the normalization base.
+    /// @dev The token0/token1 held by `liquidity` over `[tickLower, tickUpper]` at the start price,
+    ///      valued in token1. A narrower range packs more capital at the price, so the same drift is
+    ///      a larger fraction of it — which is exactly why concentration raises inventory risk.
+    function _lpCapitalWad() internal view returns (uint256) {
+        Market memory m = market();
+        uint160 sqrtP = TickMath.getSqrtPriceAtTick(m.startTick);
+        uint160 sqrtLower = TickMath.getSqrtPriceAtTick(m.tickLower);
+        uint160 sqrtUpper = TickMath.getSqrtPriceAtTick(m.tickUpper);
+        uint256 amount0 = SqrtPriceMath.getAmount0Delta(sqrtP, sqrtUpper, m.liquidity, false);
+        uint256 amount1 = SqrtPriceMath.getAmount1Delta(sqrtLower, sqrtP, m.liquidity, false);
+        return amount1 + FullMath.mulDiv(amount0, _priceWadAtTick(m.startTick), WAD);
     }
 
     /// @notice The market parameters for this run.

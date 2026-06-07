@@ -18,6 +18,8 @@ contract AgentsTest is SimBase {
             stepTicks: 10,
             driftTicks: 0,
             liquidity: 1e21,
+            tickLower: -60_000,
+            tickUpper: 60_000,
             blocks: 50,
             retailBase: 1e21,
             retailRefFee: 3000

@@ -21,6 +21,8 @@ contract MetricsTest is SimBase {
             stepTicks: 10,
             driftTicks: 0,
             liquidity: 1e23,
+            tickLower: -60_000,
+            tickUpper: 60_000,
             blocks: 200,
             retailBase: 5e20,
             retailRefFee: 3000
