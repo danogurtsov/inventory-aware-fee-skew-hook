@@ -38,7 +38,7 @@ abstract contract SimBase is Test {
         int24 tickUpper; // LP position range upper bound
         uint256 blocks; // number of blocks (12s each)
         uint256 retailBase; // retail notional per block at zero fee (token1 units)
-        uint24 retailRefFee; // fee (pips) at which retail flow halves
+        uint24 retailChokeFee; // fee (pips) at which retail flow chokes to zero
     }
 
     // Fee (pips) charged per direction. `zeroForOne` == trader sells token0 (pushes price down).
@@ -163,7 +163,7 @@ abstract contract SimBase is Test {
     function _stepRetail(SimPool pool, uint256 seed, uint256 blk, FeeQuote memory q) internal {
         Market memory m = market();
         uint24 avgFee = uint24((uint256(q.feeZeroForOne) + q.feeOneForZero) / 2);
-        uint256 notional = Agents.retailNotional(m.retailBase, avgFee, m.retailRefFee);
+        uint256 notional = Agents.retailNotional(m.retailBase, avgFee, m.retailChokeFee);
         if (notional == 0) return;
 
         uint256 h = uint256(keccak256(abi.encode(seed, "retail", blk)));

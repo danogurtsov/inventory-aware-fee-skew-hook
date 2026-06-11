@@ -25,7 +25,7 @@ contract NormalizeTest is SimBase {
             tickUpper: 60_000,
             blocks: 200,
             retailBase: 5e20,
-            retailRefFee: 3000
+            retailChokeFee: 12000
         });
     }
 

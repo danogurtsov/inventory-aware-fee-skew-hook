@@ -19,15 +19,17 @@ library Agents {
         return int24(uint24(feePips / 100));
     }
 
-    /// @notice Fee-elastic retail notional: base flow scaled down as the fee rises.
-    /// @dev `notional = base * ref / (ref + fee)`. At zero fee it equals `base`; it decreases
-    ///      monotonically toward zero as the fee grows, and never goes negative. `refFeePips` sets
-    ///      the sensitivity scale (the fee at which retail flow halves).
-    function retailNotional(uint256 baseNotional, uint24 feePips, uint24 refFeePips)
+    /// @notice Fee-elastic retail notional: linear demand that chokes off at a maximum fee.
+    /// @dev `notional = base * (choke - fee) / choke` for `fee < choke`, else `0`. Linear demand is
+    ///      what makes fee revenue a *Laffer curve* — `revenue = notional * fee` is a parabola that
+    ///      peaks at an interior fee and then falls as flow walks away. That interior peak is why a
+    ///      best static fee exists to be found (and beaten), instead of "always charge more".
+    function retailNotional(uint256 baseNotional, uint24 feePips, uint24 chokeFeePips)
         internal
         pure
         returns (uint256)
     {
-        return (baseNotional * refFeePips) / (uint256(refFeePips) + feePips);
+        if (feePips >= chokeFeePips) return 0;
+        return (baseNotional * (chokeFeePips - feePips)) / chokeFeePips;
     }
 }

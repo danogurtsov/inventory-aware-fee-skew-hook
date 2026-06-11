@@ -22,7 +22,7 @@ contract AgentsTest is SimBase {
             tickUpper: 60_000,
             blocks: 50,
             retailBase: 1e21,
-            retailRefFee: 3000
+            retailChokeFee: 12000
         });
     }
 
