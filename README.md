@@ -70,6 +70,10 @@ The fork tests (`test/fork/`) need a mainnet RPC. Copy `.env.example` to `.env` 
 to any mainnet provider (dRPC, Alchemy, Infura, QuickNode, your own node). `.env` is gitignored — never
 commit a real key. Without it, the fork suite skips automatically; everything else still runs.
 
+The core fee math also carries a symbolic spec that machine-proves its bounds/sign guarantees over all
+inputs (not just sampled fuzz). It uses the `check_` prefix, so `forge test` ignores it; run it with
+[Halmos](https://github.com/a16z/halmos): `halmos --match-contract SkewCurveSymbolic`.
+
 ## Layout
 
 ```
