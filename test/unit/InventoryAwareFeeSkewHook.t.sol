@@ -19,6 +19,7 @@ import {SkewCurve} from "../../src/libraries/SkewCurve.sol";
 ///         side, discount the rebalancing side), and it is symmetric when the pool sits at target.
 contract InventoryAwareFeeSkewHookTest is Test, Deployers {
     InventoryAwareFeeSkewHook internal hook;
+    address internal owner = address(0xB0B);
 
     Inventory.Config internal invCfg =
         Inventory.Config({tickLower: -1000, tickUpper: 1000, targetToken0Wad: 0.5e18});
@@ -27,10 +28,10 @@ contract InventoryAwareFeeSkewHookTest is Test, Deployers {
 
     function _deployHook() internal {
         uint160 flags = uint160(Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG);
-        bytes memory args = abi.encode(manager, invCfg, skew);
+        bytes memory args = abi.encode(manager, owner, invCfg, skew);
         (address expected, bytes32 salt) =
             HookMiner.find(address(this), flags, type(InventoryAwareFeeSkewHook).creationCode, args);
-        hook = new InventoryAwareFeeSkewHook{salt: salt}(manager, invCfg, skew);
+        hook = new InventoryAwareFeeSkewHook{salt: salt}(manager, owner, invCfg, skew);
         assertEq(address(hook), expected, "mined address mismatch");
     }
 
