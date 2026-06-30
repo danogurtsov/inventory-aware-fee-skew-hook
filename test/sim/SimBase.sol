@@ -96,7 +96,15 @@ abstract contract SimBase is Test {
         invSampleSumSq = 0;
         feePipsSum = 0;
         feeSwapCount = 0;
+        _resetPolicy();
     }
+
+    /// @dev Hook for a policy to reset its own per-run state (e.g. a directional fee's tick history).
+    function _resetPolicy() internal virtual {}
+
+    /// @dev Hook called once per block *after* the block is simulated, so a policy can fold the
+    ///      just-observed external tick into a backward-looking signal (used by the directional fee).
+    function _onBlock(int24 extTick) internal virtual {}
 
     // --- the run loop ---------------------------------------------------------
 
@@ -120,6 +128,8 @@ abstract contract SimBase is Test {
             // safe: |invDelta0| is bounded by pool liquidity; its square stays far under 2**256.
             // forge-lint: disable-next-line(unsafe-typecast)
             invSampleSumSq += uint256(invDelta0 * invDelta0);
+
+            _onBlock(extTick);
         }
 
         r.lpNetWad = lpNetWad;
