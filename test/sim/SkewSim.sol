@@ -92,6 +92,8 @@ abstract contract SkewSim is SimBase {
     ///      that side is surcharged and the opposite discounted. Backward-looking by construction.
     function _directionalQuote() internal view returns (FeeQuote memory) {
         int256 delta = int256(_dirPrevTick) - int256(_dirPrev2Tick);
+        // safe: |delta| is a bounded tick difference, exact within uint256.
+        // forge-lint: disable-next-line(unsafe-typecast)
         uint256 mag = delta < 0 ? uint256(-delta) : uint256(delta);
         uint256 skew = mag * dirCurve.slope; // pips of skew (slope = c, pips per tick)
 
