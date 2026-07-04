@@ -81,6 +81,7 @@ abstract contract SimBase is Test {
     uint256 internal feeSwapCount; // number of swaps charged a fee
 
     uint24 internal staticFeePips = 500; // default static symmetric fee for the base `_quoteFee`
+    bool internal stochVolEnabled; // when set, the price path uses clustering (Heston-ish) volatility
 
     function _reset() internal {
         invDelta0 = 0;
@@ -115,7 +116,9 @@ abstract contract SimBase is Test {
         SimPool pool = _newPool();
 
         for (uint256 b = 1; b <= m.blocks; b++) {
-            int24 extTick = PricePath.tickAt(seed, b, m.startTick, m.stepTicks, m.driftTicks);
+            int24 extTick = stochVolEnabled
+                ? PricePath.tickAtStochVol(seed, b, m.startTick, m.stepTicks, m.driftTicks)
+                : PricePath.tickAt(seed, b, m.startTick, m.stepTicks, m.driftTicks);
             curPriceWad = _priceWadAtTick(extTick);
 
             FeeQuote memory q = _quoteFee(pool.tick(), extTick);
