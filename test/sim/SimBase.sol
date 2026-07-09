@@ -82,6 +82,8 @@ abstract contract SimBase is Test {
 
     uint24 internal staticFeePips = 500; // default static symmetric fee for the base `_quoteFee`
     bool internal stochVolEnabled; // when set, the price path uses clustering (Heston-ish) volatility
+    bool internal replayEnabled; // when set, the external path is a provided historical tick array
+    int24[] internal replayTicks; // historical external ticks (used when replayEnabled)
 
     function _reset() internal {
         invDelta0 = 0;
@@ -116,9 +118,14 @@ abstract contract SimBase is Test {
         SimPool pool = _newPool();
 
         for (uint256 b = 1; b <= m.blocks; b++) {
-            int24 extTick = stochVolEnabled
-                ? PricePath.tickAtStochVol(seed, b, m.startTick, m.stepTicks, m.driftTicks)
-                : PricePath.tickAt(seed, b, m.startTick, m.stepTicks, m.driftTicks);
+            int24 extTick;
+            if (replayEnabled) {
+                extTick = replayTicks[b - 1]; // real historical path (b in 1..blocks <= length)
+            } else if (stochVolEnabled) {
+                extTick = PricePath.tickAtStochVol(seed, b, m.startTick, m.stepTicks, m.driftTicks);
+            } else {
+                extTick = PricePath.tickAt(seed, b, m.startTick, m.stepTicks, m.driftTicks);
+            }
             curPriceWad = _priceWadAtTick(extTick);
 
             FeeQuote memory q = _quoteFee(pool.tick(), extTick);
