@@ -6,9 +6,13 @@ balance. The goal is to let a passive liquidity position lean against its own in
 professional market maker does — and to measure, honestly, how much of the inventory risk that actually
 removes.
 
-> Status: work in progress. The verdict section below is a placeholder until the simulation suite is in
-> place — this repo's whole point is to measure the mechanism against the right baselines before making
-> any claim.
+> **Bottom line (measured, not promised).** The inventory skew is **at least as good as the best-tuned
+> static fee** in every regime tested, and it **leans ahead of the directional (Nezlobin) fee** on
+> signal quality — a current-state signal has no lag, a last-move signal does. But the **absolute edge is
+> small and, over many seeds, within noise**, and a *volatility-aware* fee beats a pure inventory signal
+> under clustering volatility. The value here is the honest measurement framework and the signal-quality
+> argument, not an outperformance headline. Full numbers, confidence intervals and caveats:
+> [docs/RESULTS.md](docs/RESULTS.md).
 
 ## The problem: a passive LP is a market maker who can't manage inventory
 
@@ -51,13 +55,28 @@ states (path-independent-fee theory). The honest goal is to **reduce inventory v
 IL**, not to erase them. And an inventory signal, while lag-free, is still a *state*, not a prediction:
 the skew reacts to imbalance, it does not foresee the next move.
 
-## How it is measured (verdict — TBD until the sim lands)
+## How it is measured
 
-Fee revenue is a vanity metric. The verdict here is **LP net PnL vs a rebalancing benchmark** and,
-specifically, **inventory variance / terminal-inventory skew** — measured against the *best* symmetric
-fee and against a directional (price-based) fee, with a rational fee-aware arbitrageur, fee-elastic
-retail flow, realistic (stochastic / historical) prices, normalized to capital and annualized, with
-confidence intervals. Numbers land here once the simulation suite is complete.
+Fee revenue is a vanity metric. The verdict here is **LP net PnL vs a rebalancing benchmark**
+(`fees − loss-versus-rebalancing`) and **inventory variance / terminal-inventory skew** — measured
+against the *best* symmetric fee (found by a Monte-Carlo grid search) and against a directional
+(price-based) fee, with a rational fee-aware arbitrageur, fee-elastic retail flow, realistic
+(stochastic / historical) prices, normalized to capital and annualized, with confidence intervals. The
+simulation harness lives in `test/sim/`; the fork backtests in `test/fork/`. Results, tables and the
+honest caveats are in [docs/RESULTS.md](docs/RESULTS.md).
+
+## Threat model & safety
+
+- **Never reverts a swap the pool would accept.** The fee is always clamped to `[minFee, maxFee]` for
+  both directions; proven by fuzz + a Halmos symbolic spec on `SkewCurve`, and by a stateful invariant
+  campaign (`test/invariant/`) over tens of thousands of random swaps, retunes and pause toggles.
+- **Reads state, holds none at risk.** `beforeSwap` reads the pool's `slot0` tick (O(1), no external
+  calls that could reenter) and computes the fee from pure libraries.
+- **Governed, not custodial.** An `Ownable2Step` owner can retune the curve/target (validated) and can
+  `pause()` to fall back to a fixed symmetric `baseFee`; it never takes custody of funds.
+- **Dynamic-fee only.** Initialization reverts on a static-fee pool (`NotDynamicFee`).
+- A fee cannot eliminate impermanent loss (see "What it is not"); the design goal is variance reduction
+  measured honestly, not a guarantee.
 
 ## Build & test
 
