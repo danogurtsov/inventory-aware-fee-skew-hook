@@ -97,12 +97,18 @@ inputs (not just sampled fuzz). It uses the `check_` prefix, so `forge test` ign
 
 ```
 src/
-  InventoryAwareFeeSkewHook.sol   the hook (asymmetric beforeSwap fee)      — TBD
+  InventoryAwareFeeSkewHook.sol   the hook (asymmetric beforeSwap fee)
   libraries/
-    Inventory.sol                 pool inventory imbalance vs target        — TBD
-    SkewCurve.sol                 (imbalance, direction, vol) -> fee, bounded — TBD
+    Inventory.sol                 pool inventory imbalance vs target
+    SkewCurve.sol                 (imbalance, direction, vol) -> fee, bounded
+  interfaces/IInventoryFeeHook.sol
+script/Deploy.s.sol               HookMiner CREATE2 deploy
 test/
-  unit/ invariant/ sim/ fork/     correctness, safety, evaluation, real pools
+  unit/                           SkewCurve, Inventory, hook wiring, governance
+  invariant/                      fee bounded both directions, never reverts a swap
+  halmos/                         symbolic spec for SkewCurve
+  sim/                            evaluation harness + policy comparison
+  fork/                           live mainnet pools + historical replay (ETH_RPC_URL)
 ```
 
 ## Prior art & references
