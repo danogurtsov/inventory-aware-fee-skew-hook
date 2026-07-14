@@ -1,5 +1,10 @@
 # inventory-aware fee skew hook
 
+![CI](https://github.com/danogurtsov/inventory-aware-fee-skew-hook/actions/workflows/ci.yml/badge.svg)
+![Solidity](https://img.shields.io/badge/Solidity-0.8.26-363636?logo=solidity&logoColor=white)
+![Foundry](https://img.shields.io/badge/built%20with-Foundry-000000?logo=foundry&logoColor=white)
+![License: MIT](https://img.shields.io/badge/License-MIT-blue)
+
 A Uniswap v4 hook that makes the LP fee **asymmetric**, skewed by the pool's current inventory
 imbalance: cheaper to trade the pool back toward its target ratio, dearer to push it further out of
 balance. The goal is to let a passive liquidity position lean against its own inventory the way a
